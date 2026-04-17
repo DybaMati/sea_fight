@@ -6,6 +6,7 @@ const emailInput = document.getElementById("emailInput");
 const passwordInput = document.getElementById("passwordInput");
 const submitBtn = document.getElementById("submitBtn");
 const statusEl = document.getElementById("status");
+const authOnlineEl = document.getElementById("authOnline");
 
 let mode = "login";
 
@@ -30,6 +31,16 @@ async function trySession() {
   const response = await fetch("/api/me", { credentials: "include" });
   if (response.ok) {
     location.href = "/game";
+  }
+}
+
+async function refreshOnline() {
+  try {
+    const response = await fetch("/api/online-count");
+    const data = await response.json();
+    authOnlineEl.textContent = `Online: ${data.online ?? 0}`;
+  } catch {
+    authOnlineEl.textContent = "Online: ?";
   }
 }
 
@@ -72,3 +83,5 @@ authForm.addEventListener("submit", async (event) => {
 
 setMode("login");
 trySession();
+refreshOnline();
+setInterval(refreshOnline, 5000);

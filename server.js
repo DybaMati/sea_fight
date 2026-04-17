@@ -29,8 +29,11 @@ const players = new Map();
 const bullets = new Map();
 const mobs = new Map();
 const sessions = new Map();
+const playerByUserId = new Map();
+const disconnectTimers = new Map();
 let bulletId = 1;
 let entityId = 1;
+const PLAYER_DISCONNECT_GRACE_MS = 5000;
 
 async function ensureSchema() {
   const bootstrap = await mysql.createConnection({
@@ -124,7 +127,6 @@ function createShip(id, kind) {
     exp: 0,
     level: 1,
     healCooldown: 0,
-    autoAttack: false,
     attackCooldown: 1.0,
     attackRange: 420,
     moveTarget: null
@@ -368,7 +370,17 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "GET" && url.pathname === "/api/online-count") {
+      json(res, 200, { online: players.size });
+      return;
+    }
+
     if (req.method === "GET" && url.pathname === "/") {
+      serveStatic(res, "/home.html");
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/auth") {
       serveStatic(res, "/auth.html");
       return;
     }
@@ -377,7 +389,7 @@ const server = http.createServer(async (req, res) => {
       const auth = getSessionFromReq(req);
       if (!auth) {
         res.statusCode = 302;
-        res.setHeader("Location", "/");
+        res.setHeader("Location", "/auth");
         res.end();
         return;
       }
@@ -401,6 +413,28 @@ function broadcast(payload) {
       ws.send(message);
     }
   }
+}
+
+function hasLiveConnection(playerId) {
+  for (const id of clients.values()) {
+    if (id === playerId) return true;
+  }
+  return false;
+}
+
+function schedulePlayerRemoval(playerId) {
+  if (disconnectTimers.has(playerId)) {
+    clearTimeout(disconnectTimers.get(playerId));
+  }
+  const timer = setTimeout(() => {
+    disconnectTimers.delete(playerId);
+    if (hasLiveConnection(playerId)) return;
+    const player = players.get(playerId);
+    if (!player) return;
+    players.delete(playerId);
+    if (player.userId) playerByUserId.delete(player.userId);
+  }, PLAYER_DISCONNECT_GRACE_MS);
+  disconnectTimers.set(playerId, timer);
 }
 
 function nearestTarget(from, includePlayers = true) {
@@ -547,23 +581,18 @@ function updatePlayers(dt) {
         player.vx *= 0.8;
         player.vy *= 0.8;
       } else {
+        const distance = Math.sqrt(d2);
         const desired = Math.atan2(dy, dx);
         let diff = desired - player.angle;
         while (diff > Math.PI) diff -= Math.PI * 2;
         while (diff < -Math.PI) diff += Math.PI * 2;
         player.angle += clamp(diff, -player.turnSpeed * dt, player.turnSpeed * dt);
-        player.vx = Math.cos(player.angle) * player.speed;
-        player.vy = Math.sin(player.angle) * player.speed;
-      }
-    }
-
-    if (player.autoAttack) {
-      const target = nearestPlayerTo(player) || nearestTarget(player, false);
-      if (target) {
-        const inRange = dist2(player.x, player.y, target.x, target.y) <= player.attackRange * player.attackRange;
-        if (inRange && player.cooldown <= 0) {
-          fireIfReady(player, "player", target, 0.03, 20);
-        }
+        const absDiff = Math.abs(diff);
+        const alignFactor = absDiff > 1.0 ? 0 : absDiff > 0.55 ? 0.35 : 1;
+        const speedFactor = clamp(distance / 140, 0.2, 1);
+        const travelSpeed = player.speed * speedFactor * alignFactor;
+        player.vx = Math.cos(player.angle) * travelSpeed;
+        player.vy = Math.sin(player.angle) * travelSpeed;
       }
     }
 
@@ -580,9 +609,26 @@ function findEntityById(id) {
   return players.get(id) || mobs.get(id) || null;
 }
 
+function nearestAttackTarget(from) {
+  const nearestPlayer = nearestPlayerTo(from);
+  const nearestMob = nearestTarget(from, false);
+  if (!nearestPlayer) return nearestMob;
+  if (!nearestMob) return nearestPlayer;
+  const playerD2 = dist2(from.x, from.y, nearestPlayer.x, nearestPlayer.y);
+  const mobD2 = dist2(from.x, from.y, nearestMob.x, nearestMob.y);
+  return playerD2 <= mobD2 ? nearestPlayer : nearestMob;
+}
+
 function handlePlayerAction(player, msg) {
-  if (msg.action === "toggleAutoAttack") {
-    player.autoAttack = !player.autoAttack;
+  if (msg.action === "attack") {
+    let target = findEntityById(msg.targetId);
+    if (!target || !target.alive || target.id === player.id) {
+      target = nearestAttackTarget(player);
+    }
+    if (!target || !target.alive || target.id === player.id) return;
+    const inRange = dist2(player.x, player.y, target.x, target.y) <= player.attackRange * player.attackRange;
+    if (!inRange || player.cooldown > 0) return;
+    fireIfReady(player, "player", target, 0.03, 20);
     return;
   }
 
@@ -656,8 +702,7 @@ function gameState() {
       name: p.name,
       exp: p.exp,
       level: p.level,
-      healCooldown: p.healCooldown,
-      autoAttack: p.autoAttack
+      healCooldown: p.healCooldown
     })),
     mobs: Array.from(mobs.values()).map((m) => ({
       id: m.id,
@@ -686,10 +731,23 @@ wss.on("connection", (ws, req) => {
     ws.close(1008, "Unauthorized");
     return;
   }
-  const player = createShip(uid("player"), "player");
-  player.name = auth.session.user.nick;
-  player.input = { ts: 0, left: false, right: false, forward: false, back: false, fire: false };
-  players.set(player.id, player);
+  const user = auth.session.user;
+  let player = null;
+  const existingPlayerId = playerByUserId.get(user.id);
+  if (existingPlayerId && players.has(existingPlayerId)) {
+    player = players.get(existingPlayerId);
+    if (disconnectTimers.has(existingPlayerId)) {
+      clearTimeout(disconnectTimers.get(existingPlayerId));
+      disconnectTimers.delete(existingPlayerId);
+    }
+  } else {
+    player = createShip(uid("player"), "player");
+    player.input = { ts: 0, left: false, right: false, forward: false, back: false, fire: false, manualControl: false };
+    players.set(player.id, player);
+    playerByUserId.set(user.id, player.id);
+  }
+  player.name = user.nick;
+  player.userId = user.id;
   clients.set(ws, player.id);
 
   ws.send(JSON.stringify({ type: "welcome", id: player.id, name: player.name }));
@@ -725,7 +783,7 @@ wss.on("connection", (ws, req) => {
   ws.on("close", () => {
     const id = clients.get(ws);
     clients.delete(ws);
-    if (id) players.delete(id);
+    if (id) schedulePlayerRemoval(id);
   });
 });
 

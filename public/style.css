@@ -40,6 +40,43 @@ body {
   padding: 4px 6px;
   font-size: 10px;
   color: #d9efff;
+  cursor: pointer;
+}
+
+.players-panel {
+  position: fixed;
+  right: 10px;
+  top: 42px;
+  z-index: 4;
+  width: 220px;
+  max-height: 260px;
+  overflow: auto;
+  background: rgba(4, 11, 19, 0.95);
+  border: 1px solid rgba(120, 210, 255, 0.35);
+  border-radius: 8px;
+  padding: 8px;
+  font-size: 12px;
+}
+
+.players-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.players-header button {
+  border: 1px solid rgba(170, 230, 255, 0.5);
+  background: #133049;
+  color: #d9efff;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+#playersList {
+  margin: 0;
+  padding-left: 16px;
 }
 
 .connection-status {

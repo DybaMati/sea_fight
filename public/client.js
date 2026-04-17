@@ -6,6 +6,9 @@ const targetEl = document.getElementById("target");
 const attackBtn = document.getElementById("attackBtn");
 const healBtn = document.getElementById("healBtn");
 const connectionStatusEl = document.getElementById("connectionStatus");
+const playersPanelEl = document.getElementById("playersPanel");
+const playersListEl = document.getElementById("playersList");
+const closePlayersBtn = document.getElementById("closePlayersBtn");
 const HEAL_BUTTON_LABEL = "Uleczenie";
 
 const RECONNECT_DELAY_SECONDS = 5;
@@ -16,10 +19,10 @@ let isConnected = false;
 let myId = null;
 let state = null;
 let selectedTargetId = null;
-let autoAttackEnabled = false;
 let zoom = 1;
 const MIN_ZOOM = 0.2;
 const MAX_ZOOM = 2.2;
+let playersPanelOpen = false;
 
 const keys = {
   left: false,
@@ -79,8 +82,6 @@ function connectSocket() {
       myId = msg.id;
     } else if (msg.type === "state") {
       state = msg.state;
-      const me = state.players.find((p) => p.id === myId);
-      if (me) autoAttackEnabled = !!me.autoAttack;
     }
   });
 
@@ -152,7 +153,7 @@ function sendMoveTo(x, y) {
 }
 
 attackBtn.addEventListener("click", () => {
-  sendAction("toggleAutoAttack");
+  sendAction("attack", selectedTargetId);
 });
 
 healBtn.addEventListener("click", () => {
@@ -320,7 +321,16 @@ function render() {
     targetEl.textContent = "Cel: brak";
   }
   attackBtn.disabled = false;
-  attackBtn.textContent = autoAttackEnabled ? "Atak: ON" : "Atak: OFF";
+  attackBtn.textContent = "Atak";
+
+  if (playersPanelOpen) {
+    playersListEl.innerHTML = "";
+    for (const p of state.players) {
+      const li = document.createElement("li");
+      li.textContent = p.id === myId ? `${p.name} (Ty)` : p.name;
+      playersListEl.appendChild(li);
+    }
+  }
 }
 
 function onMapPointer(clientX, clientY) {
@@ -362,6 +372,16 @@ canvas.addEventListener("touchstart", (event) => {
   if (!touch) return;
   onMapPointer(touch.clientX, touch.clientY);
   event.preventDefault();
+});
+
+coordsEl.addEventListener("click", () => {
+  playersPanelOpen = !playersPanelOpen;
+  playersPanelEl.classList.toggle("hidden", !playersPanelOpen);
+});
+
+closePlayersBtn.addEventListener("click", () => {
+  playersPanelOpen = false;
+  playersPanelEl.classList.add("hidden");
 });
 
 render();

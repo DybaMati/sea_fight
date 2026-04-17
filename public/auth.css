@@ -36,6 +36,12 @@ h1 {
   color: #9ac7e7;
 }
 
+.online {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: #b8e8ff;
+}
+
 .tabs {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -95,4 +101,13 @@ input {
 
 .status.ok {
   color: #93f3b2;
+}
+
+.home-link {
+  margin-top: 10px;
+  text-align: center;
+}
+
+.home-link a {
+  color: #9ac7e7;
 }
