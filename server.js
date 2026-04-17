@@ -485,6 +485,11 @@ function fireIfReady(shooter, ownerKind, target, spread = 0.12, damage = 16) {
 }
 
 function damageTarget(target, amount, attackerId) {
+  if (target.kind === "mob" && players.has(attackerId)) {
+    // Mob zaczyna reagowac od pierwszego trafienia.
+    target.aggroTargetId = attackerId;
+  }
+
   target.hp -= amount;
   if (target.hp > 0) return;
   target.alive = false;
@@ -495,9 +500,6 @@ function damageTarget(target, amount, attackerId) {
     if (target.kind === "player") player.exp += 40;
     if (target.kind === "mob") player.exp += target.expReward || 12;
     player.level = Math.floor(player.exp / 100) + 1;
-    if (target.kind === "mob") {
-      target.aggroTargetId = attackerId;
-    }
   }
 
   if (target.kind === "player") {
@@ -527,7 +529,19 @@ function updateAI(unit, dt, targetPreferencePlayers = true) {
   } else {
     target = nearestTarget(unit, targetPreferencePlayers);
   }
-  if (!target) return;
+  if (!target) {
+    if (unit.kind === "mob") {
+      // Spokojny dryf kiedy mob nie jest w walce.
+      unit.angle += rand(-0.6, 0.6) * dt;
+      const driftSpeed = unit.speed * 0.45;
+      unit.vx = Math.cos(unit.angle) * driftSpeed;
+      unit.vy = Math.sin(unit.angle) * driftSpeed;
+      unit.x = clamp(unit.x + unit.vx * dt, unit.radius, WORLD_WIDTH - unit.radius);
+      unit.y = clamp(unit.y + unit.vy * dt, unit.radius, WORLD_HEIGHT - unit.radius);
+      if (unit.cooldown > 0) unit.cooldown -= dt;
+    }
+    return;
+  }
 
   const desired = Math.atan2(target.y - unit.y, target.x - unit.x);
   let diff = desired - unit.angle;
