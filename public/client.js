@@ -8,13 +8,15 @@ const healBtn = document.getElementById("healBtn");
 const connectionStatusEl = document.getElementById("connectionStatus");
 const HEAL_BUTTON_LABEL = "Uleczenie";
 
-const RECONNECT_MS = 5000;
+const REFRESH_DELAY_SECONDS = 5;
 let socket = null;
-let reconnectTimer = null;
+let refreshTimer = null;
+let refreshCountdown = REFRESH_DELAY_SECONDS;
 let isConnected = false;
 let myId = null;
 let state = null;
 let selectedTargetId = null;
+let autoAttackEnabled = false;
 let zoom = 1;
 const MIN_ZOOM = 0.35;
 const MAX_ZOOM = 1.8;
@@ -40,16 +42,24 @@ function setConnectionStatus(text, visible) {
 }
 
 function clearReconnectTimer() {
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
   }
 }
 
 function scheduleReconnect() {
   clearReconnectTimer();
-  setConnectionStatus("Brak polaczenia z serwerem, ponowne laczenie za 5 sec", true);
-  reconnectTimer = setTimeout(connectSocket, RECONNECT_MS);
+  refreshCountdown = REFRESH_DELAY_SECONDS;
+  setConnectionStatus(`Brak polaczenia z serwerem. Odswiezenie za ${refreshCountdown}s`, true);
+  refreshTimer = setInterval(() => {
+    refreshCountdown -= 1;
+    if (refreshCountdown <= 0) {
+      window.location.reload();
+      return;
+    }
+    setConnectionStatus(`Brak polaczenia z serwerem. Odswiezenie za ${refreshCountdown}s`, true);
+  }, 1000);
 }
 
 function connectSocket() {
@@ -67,6 +77,8 @@ function connectSocket() {
       myId = msg.id;
     } else if (msg.type === "state") {
       state = msg.state;
+      const me = state.players.find((p) => p.id === myId);
+      if (me) autoAttackEnabled = !!me.autoAttack;
     }
   });
 
@@ -129,7 +141,7 @@ function sendAction(action, targetId = null) {
 }
 
 attackBtn.addEventListener("click", () => {
-  sendAction("attack", selectedTargetId);
+  sendAction("toggleAutoAttack");
 });
 
 healBtn.addEventListener("click", () => {
@@ -140,7 +152,6 @@ function allTargetableEntities() {
   if (!state) return [];
   return [
     ...state.players.filter((p) => p.id !== myId).map((p) => ({ ...p, kind: "player" })),
-    ...state.npcs.map((n) => ({ ...n, kind: "npc" })),
     ...state.mobs.map((m) => ({ ...m, kind: "mob" }))
   ];
 }
@@ -220,7 +231,7 @@ function render() {
     ctx.fillStyle = "#dcefff";
     ctx.font = "20px Arial";
     ctx.textAlign = "center";
-    ctx.fillText(isConnected ? "Ladowanie stanu gry..." : "Laczenie z serwerem...", canvas.width / 2, canvas.height / 2);
+    ctx.fillText(isConnected ? "Ladowanie stanu gry..." : "Brak polaczenia z serwerem...", canvas.width / 2, canvas.height / 2);
     return;
   }
 
@@ -250,10 +261,6 @@ function render() {
       m.name || "Potwor",
       `+${m.expReward || 12} EXP`
     );
-  }
-
-  for (const n of state.npcs) {
-    drawShip((n.x - cameraX) * zoom, (n.y - cameraY) * zoom, n.angle, n.radius * zoom, "#4ea4c7", n.hp, n.maxHp);
   }
 
   for (const p of state.players) {
@@ -299,9 +306,10 @@ function render() {
   if (currentTarget) {
     targetEl.textContent = `Cel: ${currentTarget.kind.toUpperCase()} (${Math.ceil(currentTarget.hp)} HP)`;
   } else {
-    targetEl.textContent = "Cel: brak (atak wybierze najblizszy cel w zasiegu)";
+    targetEl.textContent = "Cel: auto (najblizszy w zasiegu)";
   }
   attackBtn.disabled = false;
+  attackBtn.textContent = autoAttackEnabled ? "Atak: ON" : "Atak: OFF";
 }
 
 canvas.addEventListener("click", (event) => {

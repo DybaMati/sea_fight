@@ -13,7 +13,6 @@ const MAX_INPUT_AGE_MS = 200;
 const clients = new Map();
 const players = new Map();
 const bullets = new Map();
-const npcs = new Map();
 const mobs = new Map();
 let bulletId = 1;
 let entityId = 1;
@@ -77,7 +76,10 @@ function createShip(id, kind) {
     score: 0,
     exp: 0,
     level: 1,
-    healCooldown: 0
+    healCooldown: 0,
+    autoAttack: false,
+    attackCooldown: 1.0,
+    attackRange: 420
   };
 }
 
@@ -133,11 +135,6 @@ function createBullet(ownerId, ownerKind, x, y, angle, damage) {
   };
 }
 
-for (let i = 0; i < 4; i += 1) {
-  const npc = createShip(uid("npc"), "npc");
-  npcs.set(npc.id, npc);
-}
-
 for (let i = 0; i < 8; i += 1) {
   const mob = createMob();
   mobs.set(mob.id, mob);
@@ -180,7 +177,7 @@ function nearestTarget(from, includePlayers = true) {
   let best = null;
   let bestD2 = Infinity;
 
-  const pools = [npcs.values(), mobs.values()];
+  const pools = [mobs.values()];
   if (includePlayers) pools.unshift(players.values());
 
   for (const pool of pools) {
@@ -232,7 +229,6 @@ function damageTarget(target, amount, attackerId) {
     const player = players.get(attackerId);
     player.score += 1;
     if (target.kind === "player") player.exp += 40;
-    if (target.kind === "npc") player.exp += 25;
     if (target.kind === "mob") player.exp += target.expReward || 12;
     player.level = Math.floor(player.exp / 100) + 1;
     if (target.kind === "mob") {
@@ -245,13 +241,6 @@ function damageTarget(target, amount, attackerId) {
     target.x = rand(120, WORLD_WIDTH - 120);
     target.y = rand(120, WORLD_HEIGHT - 120);
     target.alive = true;
-    return;
-  }
-
-  if (target.kind === "npc") {
-    npcs.delete(target.id);
-    const npc = createShip(uid("npc"), "npc");
-    npcs.set(npc.id, npc);
     return;
   }
 
@@ -316,7 +305,16 @@ function updatePlayers(dt) {
       const ay = Math.sin(player.angle) * player.speed * thrust;
       player.vx = clamp(player.vx + ax * dt * 2.2, -player.speed, player.speed);
       player.vy = clamp(player.vy + ay * dt * 2.2, -player.speed, player.speed);
+    }
 
+    if (player.autoAttack) {
+      const target = nearestPlayerTo(player) || nearestTarget(player, false);
+      if (target) {
+        const inRange = dist2(player.x, player.y, target.x, target.y) <= player.attackRange * player.attackRange;
+        if (inRange && player.cooldown <= 0) {
+          fireIfReady(player, "player", target, 0.03, 20);
+        }
+      }
     }
 
     player.x = clamp(player.x + player.vx * dt, player.radius, WORLD_WIDTH - player.radius);
@@ -329,19 +327,12 @@ function updatePlayers(dt) {
 }
 
 function findEntityById(id) {
-  return players.get(id) || npcs.get(id) || mobs.get(id) || null;
+  return players.get(id) || mobs.get(id) || null;
 }
 
 function handlePlayerAction(player, msg) {
-  if (msg.action === "attack") {
-    let target = findEntityById(msg.targetId);
-    if (!target || !target.alive || target.id === player.id) {
-      target = nearestPlayerTo(player) || nearestTarget(player, false);
-    }
-    if (!target || !target.alive || target.id === player.id) return;
-    const inRange = dist2(player.x, player.y, target.x, target.y) <= 420 * 420;
-    if (!inRange || player.cooldown > 0) return;
-    fireIfReady(player, "player", target, 0.03, 20);
+  if (msg.action === "toggleAutoAttack") {
+    player.autoAttack = !player.autoAttack;
     return;
   }
 
@@ -373,14 +364,11 @@ function updateBullets(dt) {
       continue;
     }
 
-    const targets = [
-      ...players.values(),
-      ...npcs.values(),
-      ...mobs.values()
-    ];
+    const targets = [...players.values(), ...mobs.values()];
 
     for (const target of targets) {
       if (!target.alive || target.id === bullet.ownerId) continue;
+      if (bullet.ownerKind === "mob" && target.kind === "mob") continue;
       const rr = target.radius + bullet.radius;
       if (dist2(bullet.x, bullet.y, target.x, target.y) <= rr * rr) {
         damageTarget(target, bullet.damage, bullet.ownerId);
@@ -407,16 +395,8 @@ function gameState() {
       name: p.name,
       exp: p.exp,
       level: p.level,
-      healCooldown: p.healCooldown
-    })),
-    npcs: Array.from(npcs.values()).map((n) => ({
-      id: n.id,
-      x: n.x,
-      y: n.y,
-      angle: n.angle,
-      hp: n.hp,
-      maxHp: n.maxHp,
-      radius: n.radius
+      healCooldown: p.healCooldown,
+      autoAttack: p.autoAttack
     })),
     mobs: Array.from(mobs.values()).map((m) => ({
       id: m.id,
@@ -484,7 +464,6 @@ wss.on("connection", (ws) => {
 
 setInterval(() => {
   updatePlayers(DT);
-  for (const npc of npcs.values()) updateAI(npc, DT, true);
   for (const mob of mobs.values()) updateAI(mob, DT, true);
   updateBullets(DT);
 }, 1000 / TICK_RATE);
