@@ -8,18 +8,18 @@ const healBtn = document.getElementById("healBtn");
 const connectionStatusEl = document.getElementById("connectionStatus");
 const HEAL_BUTTON_LABEL = "Uleczenie";
 
-const REFRESH_DELAY_SECONDS = 5;
+const RECONNECT_DELAY_SECONDS = 5;
 let socket = null;
-let refreshTimer = null;
-let refreshCountdown = REFRESH_DELAY_SECONDS;
+let reconnectTimer = null;
+let reconnectCountdown = RECONNECT_DELAY_SECONDS;
 let isConnected = false;
 let myId = null;
 let state = null;
 let selectedTargetId = null;
 let autoAttackEnabled = false;
 let zoom = 1;
-const MIN_ZOOM = 0.35;
-const MAX_ZOOM = 1.8;
+const MIN_ZOOM = 0.2;
+const MAX_ZOOM = 2.2;
 
 const keys = {
   left: false,
@@ -42,29 +42,31 @@ function setConnectionStatus(text, visible) {
 }
 
 function clearReconnectTimer() {
-  if (refreshTimer) {
-    clearInterval(refreshTimer);
-    refreshTimer = null;
+  if (reconnectTimer) {
+    clearInterval(reconnectTimer);
+    reconnectTimer = null;
   }
 }
 
 function scheduleReconnect() {
   clearReconnectTimer();
-  refreshCountdown = REFRESH_DELAY_SECONDS;
-  setConnectionStatus(`Brak polaczenia z serwerem. Odswiezenie za ${refreshCountdown}s`, true);
-  refreshTimer = setInterval(() => {
-    refreshCountdown -= 1;
-    if (refreshCountdown <= 0) {
-      window.location.reload();
+  reconnectCountdown = RECONNECT_DELAY_SECONDS;
+  setConnectionStatus(`Brak polaczenia z serwerem. Ponowna proba za ${reconnectCountdown}s`, true);
+  reconnectTimer = setInterval(() => {
+    reconnectCountdown -= 1;
+    if (reconnectCountdown <= 0) {
+      clearReconnectTimer();
+      connectSocket();
       return;
     }
-    setConnectionStatus(`Brak polaczenia z serwerem. Odswiezenie za ${refreshCountdown}s`, true);
+    setConnectionStatus(`Brak polaczenia z serwerem. Ponowna proba za ${reconnectCountdown}s`, true);
   }, 1000);
 }
 
 function connectSocket() {
   clearReconnectTimer();
-  socket = new WebSocket(`ws://${location.host}`);
+  const wsProtocol = location.protocol === "https:" ? "wss" : "ws";
+  socket = new WebSocket(`${wsProtocol}://${location.host}`);
 
   socket.addEventListener("open", () => {
     isConnected = true;
@@ -82,7 +84,11 @@ function connectSocket() {
     }
   });
 
-  socket.addEventListener("close", () => {
+  socket.addEventListener("close", (event) => {
+    if (event.code === 1008) {
+      location.href = "/";
+      return;
+    }
     isConnected = false;
     state = null;
     scheduleReconnect();
@@ -138,6 +144,11 @@ setInterval(sendInput, 1000 / 20);
 function sendAction(action, targetId = null) {
   if (!socket || socket.readyState !== WebSocket.OPEN) return;
   socket.send(JSON.stringify({ type: "action", action, targetId }));
+}
+
+function sendMoveTo(x, y) {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  socket.send(JSON.stringify({ type: "action", action: "moveTo", x, y }));
 }
 
 attackBtn.addEventListener("click", () => {
@@ -306,21 +317,21 @@ function render() {
   if (currentTarget) {
     targetEl.textContent = `Cel: ${currentTarget.kind.toUpperCase()} (${Math.ceil(currentTarget.hp)} HP)`;
   } else {
-    targetEl.textContent = "Cel: auto (najblizszy w zasiegu)";
+    targetEl.textContent = "Cel: brak";
   }
   attackBtn.disabled = false;
   attackBtn.textContent = autoAttackEnabled ? "Atak: ON" : "Atak: OFF";
 }
 
-canvas.addEventListener("click", (event) => {
+function onMapPointer(clientX, clientY) {
   if (!state) return;
   const me = state.players.find((p) => p.id === myId) || state.players[0];
   if (!me) return;
 
   const cameraX = me.x - canvas.width / (2 * zoom);
   const cameraY = me.y - canvas.height / (2 * zoom);
-  const worldX = event.clientX / zoom + cameraX;
-  const worldY = event.clientY / zoom + cameraY;
+  const worldX = clientX / zoom + cameraX;
+  const worldY = clientY / zoom + cameraY;
 
   let best = null;
   let bestD2 = 36 * 36;
@@ -334,7 +345,23 @@ canvas.addEventListener("click", (event) => {
       bestD2 = d2;
     }
   }
-  selectedTargetId = best ? best.id : null;
+  if (best) {
+    selectedTargetId = best.id;
+    return;
+  }
+  selectedTargetId = null;
+  sendMoveTo(worldX, worldY);
+}
+
+canvas.addEventListener("click", (event) => {
+  onMapPointer(event.clientX, event.clientY);
+});
+
+canvas.addEventListener("touchstart", (event) => {
+  const touch = event.changedTouches[0];
+  if (!touch) return;
+  onMapPointer(touch.clientX, touch.clientY);
+  event.preventDefault();
 });
 
 render();

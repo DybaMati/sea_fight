@@ -1,15 +1,39 @@
 # Sea Fight (MVP)
 
-Prosty prototyp gry morskiej inspirowanej Sea of Legends:
+Prototyp gry morskiej inspirowanej Sea of Legends:
 
 - jeden statek na gracza (sterowanie realtime),
-- walka z mobami i NPC statkami,
+- walka z mobami i innymi graczami,
 - prosty score za zatopienia,
-- multiplayer przez WebSocket (`ws`).
+- multiplayer przez WebSocket (`ws`),
+- logowanie/rejestracja konta w MySQL.
 
 ## Wymagania
 
 - Node.js 18+
+- MySQL 8+
+
+## Baza danych (MySQL)
+
+Domyslna konfiguracja:
+
+- host: `127.0.0.1`
+- port: `3306`
+- user: `dyba`
+- haslo: `1234`
+- baza: `sea_fight`
+
+Mozesz nadpisac przez zmienne:
+
+- `DB_HOST`
+- `DB_PORT`
+- `DB_USER`
+- `DB_PASSWORD`
+- `DB_NAME`
+
+Tabela kont jest tworzona automatycznie przy starcie:
+
+- `statki_1` (`nick`, `email`, `password_hash`, daty)
 
 ## Start
 
@@ -22,7 +46,7 @@ Nastepnie otworz:
 
 `http://localhost:3000`
 
-Mozesz odpalic wiele kart/przegladarek, aby testowac multi.
+Najpierw przejdziesz przez ekran logowania/rejestracji, a potem do gry.
 
 ## Sterowanie
 
@@ -30,14 +54,15 @@ Mozesz odpalic wiele kart/przegladarek, aby testowac multi.
 - `S` - cofanie
 - `A` - skret w lewo
 - `D` - skret w prawo
-- klik myszka - zaznaczenie celu (gracz/NPC/mob)
-- `Atak` (przycisk na dole) - atak wybranego celu
+- klik/tap na pustej mapie - plyn do wskazanego punktu
+- klik/tap na celu - zaznaczenie celu
+- `Atak` - przelacznik auto-ataku ON/OFF
 - `Uleczenie` (przycisk na dole) - leczenie z cooldownem
 
 ## RPG elementy MVP
 
 - EXP i poziom gracza (LVL),
-- mozliwosc ataku graczy oraz mobow/NPC po targetowaniu,
+- mozliwosc ataku graczy oraz mobow,
 - koordynaty mapy (X/Y) w HUD,
 - bardzo wolne poruszanie mobow.
 
@@ -63,3 +88,4 @@ W pliku potwora ustawiasz m.in.:
 - `hp`, `damage`, `expReward`
 - `speed`, `turnSpeed`, `radius`
 - `attackRange`, `attackSpread`, `attackCooldown`
+

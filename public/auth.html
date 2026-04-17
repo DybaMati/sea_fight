@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="pl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sea Fight - Logowanie</title>
+    <link rel="stylesheet" href="/auth.css" />
+  </head>
+  <body>
+    <main class="auth-layout">
+      <section class="auth-card">
+        <h1>Sea Fight</h1>
+        <p class="subtitle">Zaloguj sie lub zaloz konto, aby wejsc do gry.</p>
+
+        <div class="tabs">
+          <button id="loginTab" class="tab active">Logowanie</button>
+          <button id="registerTab" class="tab">Rejestracja</button>
+        </div>
+
+        <form id="authForm">
+          <label>
+            Nick
+            <input id="nickInput" type="text" maxlength="32" placeholder="Twoj nick" />
+          </label>
+          <label>
+            Email
+            <input id="emailInput" type="email" required placeholder="email@adres.pl" />
+          </label>
+          <label>
+            Haslo
+            <input id="passwordInput" type="password" required minlength="6" placeholder="min. 6 znakow" />
+          </label>
+          <button id="submitBtn" type="submit">Zaloguj</button>
+        </form>
+
+        <div id="status" class="status"></div>
+      </section>
+    </main>
+    <script src="/auth.js"></script>
+  </body>
+</html>

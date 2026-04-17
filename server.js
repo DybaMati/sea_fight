@@ -1,6 +1,9 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
+const bcrypt = require("bcryptjs");
+const mysql = require("mysql2/promise");
 const { WebSocketServer } = require("ws");
 
 const PORT = process.env.PORT || 3000;
@@ -9,13 +12,57 @@ const WORLD_HEIGHT = 1800;
 const TICK_RATE = 30;
 const DT = 1 / TICK_RATE;
 const MAX_INPUT_AGE_MS = 200;
+const AUTH_COOKIE_NAME = "sea_fight_session";
+const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7;
+const DB_CONFIG = {
+  host: process.env.DB_HOST || "127.0.0.1",
+  port: Number(process.env.DB_PORT || 3306),
+  user: process.env.DB_USER || "dyba",
+  password: process.env.DB_PASSWORD || "1234",
+  database: process.env.DB_NAME || "sea_fight"
+};
+
+let dbPool = null;
 
 const clients = new Map();
 const players = new Map();
 const bullets = new Map();
 const mobs = new Map();
+const sessions = new Map();
 let bulletId = 1;
 let entityId = 1;
+
+async function ensureSchema() {
+  const bootstrap = await mysql.createConnection({
+    host: DB_CONFIG.host,
+    port: DB_CONFIG.port,
+    user: DB_CONFIG.user,
+    password: DB_CONFIG.password
+  });
+  await bootstrap.query(`CREATE DATABASE IF NOT EXISTS \`${DB_CONFIG.database}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
+  await bootstrap.end();
+
+  dbPool = mysql.createPool({
+    ...DB_CONFIG,
+    connectionLimit: 10
+  });
+
+  const conn = await dbPool.getConnection();
+  try {
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS statki_1 (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        nick VARCHAR(32) NOT NULL UNIQUE,
+        email VARCHAR(255) NOT NULL UNIQUE,
+        password_hash VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        last_login_at TIMESTAMP NULL DEFAULT NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+  } finally {
+    conn.release();
+  }
+}
 
 function loadMonsterTypes() {
   const monstersDir = path.join(__dirname, "monsters");
@@ -79,7 +126,8 @@ function createShip(id, kind) {
     healCooldown: 0,
     autoAttack: false,
     attackCooldown: 1.0,
-    attackRange: 420
+    attackRange: 420,
+    moveTarget: null
   };
 }
 
@@ -146,10 +194,79 @@ const MIME = {
   ".js": "application/javascript; charset=utf-8"
 };
 
-const server = http.createServer((req, res) => {
-  let filePath = req.url === "/" ? "/index.html" : req.url;
-  filePath = path.normalize(filePath).replace(/^(\.\.[/\\])+/, "");
-  const absPath = path.join(__dirname, "public", filePath);
+function parseCookies(cookieHeader = "") {
+  const pairs = cookieHeader.split(";").map((p) => p.trim()).filter(Boolean);
+  const out = {};
+  for (const pair of pairs) {
+    const i = pair.indexOf("=");
+    if (i < 0) continue;
+    out[pair.slice(0, i)] = decodeURIComponent(pair.slice(i + 1));
+  }
+  return out;
+}
+
+function createSession(user) {
+  const token = crypto.randomBytes(24).toString("hex");
+  sessions.set(token, {
+    user,
+    expiresAt: Date.now() + SESSION_TTL_MS
+  });
+  return token;
+}
+
+function getSessionFromReq(req) {
+  const cookies = parseCookies(req.headers.cookie || "");
+  const token = cookies[AUTH_COOKIE_NAME];
+  if (!token) return null;
+  const session = sessions.get(token);
+  if (!session) return null;
+  if (session.expiresAt < Date.now()) {
+    sessions.delete(token);
+    return null;
+  }
+  return { token, session };
+}
+
+function json(res, status, payload) {
+  res.statusCode = status;
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.end(JSON.stringify(payload));
+}
+
+function readJson(req) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > 1_000_000) {
+        reject(new Error("Payload too large"));
+      }
+    });
+    req.on("end", () => {
+      try {
+        resolve(body ? JSON.parse(body) : {});
+      } catch {
+        reject(new Error("Invalid JSON"));
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
+function setSessionCookie(res, token) {
+  res.setHeader(
+    "Set-Cookie",
+    `${AUTH_COOKIE_NAME}=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`
+  );
+}
+
+function clearSessionCookie(res) {
+  res.setHeader("Set-Cookie", `${AUTH_COOKIE_NAME}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`);
+}
+
+function serveStatic(res, filePath) {
+  const normalized = path.normalize(filePath).replace(/^(\.\.[/\\])+/, "");
+  const absPath = path.join(__dirname, "public", normalized);
   fs.readFile(absPath, (err, data) => {
     if (err) {
       res.statusCode = 404;
@@ -160,6 +277,119 @@ const server = http.createServer((req, res) => {
     res.setHeader("Content-Type", MIME[ext] || "application/octet-stream");
     res.end(data);
   });
+}
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+
+  try {
+    if (req.method === "POST" && url.pathname === "/api/register") {
+      const payload = await readJson(req);
+      const nick = String(payload.nick || "").trim();
+      const email = String(payload.email || "").trim().toLowerCase();
+      const password = String(payload.password || "");
+      if (!nick || !email || !password) {
+        json(res, 400, { error: "Wymagane: nick, email, haslo." });
+        return;
+      }
+      if (nick.length < 3 || nick.length > 32) {
+        json(res, 400, { error: "Nick musi miec 3-32 znaki." });
+        return;
+      }
+      if (password.length < 6) {
+        json(res, 400, { error: "Haslo musi miec min. 6 znakow." });
+        return;
+      }
+      const passwordHash = await bcrypt.hash(password, 10);
+      try {
+        const [result] = await dbPool.execute(
+          "INSERT INTO statki_1 (nick, email, password_hash) VALUES (?, ?, ?)",
+          [nick, email, passwordHash]
+        );
+        const user = { id: result.insertId, nick, email };
+        const token = createSession(user);
+        setSessionCookie(res, token);
+        json(res, 201, { ok: true, user });
+      } catch (error) {
+        if (error && error.code === "ER_DUP_ENTRY") {
+          json(res, 409, { error: "Nick lub email juz istnieje." });
+          return;
+        }
+        throw error;
+      }
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/login") {
+      const payload = await readJson(req);
+      const email = String(payload.email || "").trim().toLowerCase();
+      const password = String(payload.password || "");
+      if (!email || !password) {
+        json(res, 400, { error: "Podaj email i haslo." });
+        return;
+      }
+      const [rows] = await dbPool.execute(
+        "SELECT id, nick, email, password_hash FROM statki_1 WHERE email = ? LIMIT 1",
+        [email]
+      );
+      if (!rows.length) {
+        json(res, 401, { error: "Niepoprawny email lub haslo." });
+        return;
+      }
+      const userRow = rows[0];
+      const ok = await bcrypt.compare(password, userRow.password_hash);
+      if (!ok) {
+        json(res, 401, { error: "Niepoprawny email lub haslo." });
+        return;
+      }
+      await dbPool.execute("UPDATE statki_1 SET last_login_at = CURRENT_TIMESTAMP WHERE id = ?", [userRow.id]);
+      const user = { id: userRow.id, nick: userRow.nick, email: userRow.email };
+      const token = createSession(user);
+      setSessionCookie(res, token);
+      json(res, 200, { ok: true, user });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/logout") {
+      const auth = getSessionFromReq(req);
+      if (auth) sessions.delete(auth.token);
+      clearSessionCookie(res);
+      json(res, 200, { ok: true });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/me") {
+      const auth = getSessionFromReq(req);
+      if (!auth) {
+        json(res, 401, { error: "Brak sesji." });
+        return;
+      }
+      json(res, 200, { user: auth.session.user });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/") {
+      serveStatic(res, "/auth.html");
+      return;
+    }
+
+    if (req.method === "GET" && (url.pathname === "/game" || url.pathname === "/index.html")) {
+      const auth = getSessionFromReq(req);
+      if (!auth) {
+        res.statusCode = 302;
+        res.setHeader("Location", "/");
+        res.end();
+        return;
+      }
+      serveStatic(res, "/index.html");
+      return;
+    }
+
+    serveStatic(res, url.pathname);
+  } catch (error) {
+    console.error("HTTP error", error);
+    json(res, 500, { error: "Blad serwera." });
+  }
 });
 
 const wss = new WebSocketServer({ server });
@@ -293,10 +523,12 @@ function updateAI(unit, dt, targetPreferencePlayers = true) {
 function updatePlayers(dt) {
   for (const player of players.values()) {
     const input = player.input;
-    if (!input || Date.now() - input.ts > MAX_INPUT_AGE_MS) {
+    const hasFreshInput = !!input && Date.now() - input.ts <= MAX_INPUT_AGE_MS;
+    if (!hasFreshInput) {
       player.vx *= 0.95;
       player.vy *= 0.95;
-    } else {
+    } else if (input.manualControl) {
+      player.moveTarget = null;
       if (input.left) player.angle -= player.turnSpeed * dt;
       if (input.right) player.angle += player.turnSpeed * dt;
 
@@ -305,6 +537,24 @@ function updatePlayers(dt) {
       const ay = Math.sin(player.angle) * player.speed * thrust;
       player.vx = clamp(player.vx + ax * dt * 2.2, -player.speed, player.speed);
       player.vy = clamp(player.vy + ay * dt * 2.2, -player.speed, player.speed);
+    }
+    if ((!hasFreshInput || !input.manualControl) && player.moveTarget) {
+      const dx = player.moveTarget.x - player.x;
+      const dy = player.moveTarget.y - player.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < 12 * 12) {
+        player.moveTarget = null;
+        player.vx *= 0.8;
+        player.vy *= 0.8;
+      } else {
+        const desired = Math.atan2(dy, dx);
+        let diff = desired - player.angle;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        player.angle += clamp(diff, -player.turnSpeed * dt, player.turnSpeed * dt);
+        player.vx = Math.cos(player.angle) * player.speed;
+        player.vy = Math.sin(player.angle) * player.speed;
+      }
     }
 
     if (player.autoAttack) {
@@ -333,6 +583,17 @@ function findEntityById(id) {
 function handlePlayerAction(player, msg) {
   if (msg.action === "toggleAutoAttack") {
     player.autoAttack = !player.autoAttack;
+    return;
+  }
+
+  if (msg.action === "moveTo") {
+    const x = Number(msg.x);
+    const y = Number(msg.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    player.moveTarget = {
+      x: clamp(x, player.radius, WORLD_WIDTH - player.radius),
+      y: clamp(y, player.radius, WORLD_HEIGHT - player.radius)
+    };
     return;
   }
 
@@ -419,9 +680,14 @@ function gameState() {
   };
 }
 
-wss.on("connection", (ws) => {
+wss.on("connection", (ws, req) => {
+  const auth = getSessionFromReq(req);
+  if (!auth) {
+    ws.close(1008, "Unauthorized");
+    return;
+  }
   const player = createShip(uid("player"), "player");
-  player.name = `Pirate-${Math.floor(rand(100, 999))}`;
+  player.name = auth.session.user.nick;
   player.input = { ts: 0, left: false, right: false, forward: false, back: false, fire: false };
   players.set(player.id, player);
   clients.set(ws, player.id);
@@ -442,7 +708,8 @@ wss.on("connection", (ws) => {
           right: !!msg.right,
           forward: !!msg.forward,
           back: !!msg.back,
-          fire: false
+          fire: false,
+          manualControl: !!msg.left || !!msg.right || !!msg.forward || !!msg.back
         };
         return;
       }
@@ -472,6 +739,16 @@ setInterval(() => {
   broadcast({ type: "state", state: gameState() });
 }, 1000 / 20);
 
-server.listen(PORT, () => {
-  console.log(`Sea Fight server on http://localhost:${PORT}`);
-});
+async function start() {
+  try {
+    await ensureSchema();
+    server.listen(PORT, () => {
+      console.log(`Sea Fight server on http://localhost:${PORT}`);
+    });
+  } catch (error) {
+    console.error("Nie mozna uruchomic serwera/bazy.", error);
+    process.exit(1);
+  }
+}
+
+start();

@@ -8,6 +8,8 @@
     "dev": "node server.js"
   },
   "dependencies": {
+    "bcryptjs": "^3.0.2",
+    "mysql2": "^3.15.2",
     "ws": "^8.18.0"
   }
 }
