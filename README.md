@@ -30,7 +30,16 @@ Mozesz odpalic wiele kart/przegladarek, aby testowac multi.
 - `S` - cofanie
 - `A` - skret w lewo
 - `D` - skret w prawo
-- `Spacja` - strzal
+- klik myszka - zaznaczenie celu (gracz/NPC/mob)
+- `Atak` (przycisk na dole) - atak wybranego celu
+- `Uleczenie` (przycisk na dole) - leczenie z cooldownem
+
+## RPG elementy MVP
+
+- EXP i poziom gracza (LVL),
+- mozliwosc ataku graczy oraz mobow/NPC po targetowaniu,
+- koordynaty mapy (X/Y) w HUD,
+- bardzo wolne poruszanie mobow.
 
 ## Co jest dalej
 

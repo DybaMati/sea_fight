@@ -50,11 +50,14 @@ function createShip(id, kind) {
     hp: 100,
     maxHp: 100,
     radius: 20,
-    speed: kind === "player" ? 180 : 140,
+    speed: kind === "player" ? 180 : 120,
     turnSpeed: 2.8,
     cooldown: 0,
     alive: true,
-    score: 0
+    score: 0,
+    exp: 0,
+    level: 1,
+    healCooldown: 0
   };
 }
 
@@ -70,8 +73,8 @@ function createMob() {
     hp: 60,
     maxHp: 60,
     radius: 17,
-    speed: 110,
-    turnSpeed: 2.2,
+    speed: 40,
+    turnSpeed: 1.3,
     cooldown: rand(0.2, 1.0),
     alive: true,
     score: 0
@@ -173,7 +176,12 @@ function damageTarget(target, amount, attackerId) {
   target.alive = false;
 
   if (players.has(attackerId)) {
-    players.get(attackerId).score += 1;
+    const player = players.get(attackerId);
+    player.score += 1;
+    if (target.kind === "player") player.exp += 40;
+    if (target.kind === "npc") player.exp += 25;
+    if (target.kind === "mob") player.exp += 12;
+    player.level = Math.floor(player.exp / 100) + 1;
   }
 
   if (target.kind === "player") {
@@ -234,10 +242,6 @@ function updatePlayers(dt) {
       player.vx = clamp(player.vx + ax * dt * 2.2, -player.speed, player.speed);
       player.vy = clamp(player.vy + ay * dt * 2.2, -player.speed, player.speed);
 
-      if (input.fire) {
-        const target = nearestTarget(player, true);
-        fireIfReady(player, "player", target, 0.06, 18);
-      }
     }
 
     player.x = clamp(player.x + player.vx * dt, player.radius, WORLD_WIDTH - player.radius);
@@ -245,6 +249,28 @@ function updatePlayers(dt) {
     player.vx *= 0.985;
     player.vy *= 0.985;
     if (player.cooldown > 0) player.cooldown -= dt;
+    if (player.healCooldown > 0) player.healCooldown -= dt;
+  }
+}
+
+function findEntityById(id) {
+  return players.get(id) || npcs.get(id) || mobs.get(id) || null;
+}
+
+function handlePlayerAction(player, msg) {
+  if (msg.action === "attack") {
+    const target = findEntityById(msg.targetId);
+    if (!target || !target.alive || target.id === player.id) return;
+    const inRange = dist2(player.x, player.y, target.x, target.y) <= 500 * 500;
+    if (!inRange || player.cooldown > 0) return;
+    fireIfReady(player, "player", target, 0.03, 20);
+    return;
+  }
+
+  if (msg.action === "heal") {
+    if (player.healCooldown > 0 || player.hp >= player.maxHp) return;
+    player.hp = Math.min(player.maxHp, player.hp + 35);
+    player.healCooldown = 10;
   }
 }
 
@@ -296,7 +322,10 @@ function gameState() {
       maxHp: p.maxHp,
       radius: p.radius,
       score: p.score,
-      name: p.name
+      name: p.name,
+      exp: p.exp,
+      level: p.level,
+      healCooldown: p.healCooldown
     })),
     npcs: Array.from(npcs.values()).map((n) => ({
       id: n.id,
@@ -348,8 +377,13 @@ wss.on("connection", (ws) => {
           right: !!msg.right,
           forward: !!msg.forward,
           back: !!msg.back,
-          fire: !!msg.fire
+          fire: false
         };
+        return;
+      }
+
+      if (msg.type === "action") {
+        handlePlayerAction(p, msg);
       }
     } catch (_) {
       // Ignore malformed payload.

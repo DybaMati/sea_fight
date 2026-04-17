@@ -33,3 +33,36 @@ body {
   width: 100vw;
   height: 100vh;
 }
+
+.action-bar {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 14px;
+  z-index: 3;
+  display: flex;
+  gap: 10px;
+  background: rgba(0, 0, 0, 0.42);
+  border: 1px solid rgba(120, 210, 255, 0.35);
+  border-radius: 10px;
+  padding: 10px;
+}
+
+.action-bar button {
+  min-width: 110px;
+  padding: 8px 12px;
+  border-radius: 7px;
+  border: 1px solid rgba(170, 230, 255, 0.5);
+  background: #133049;
+  color: #d9efff;
+  cursor: pointer;
+}
+
+.action-bar button:hover:enabled {
+  background: #1b4668;
+}
+
+.action-bar button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
