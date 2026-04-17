@@ -5,6 +5,7 @@ const coordsEl = document.getElementById("coords");
 const targetEl = document.getElementById("target");
 const attackBtn = document.getElementById("attackBtn");
 const healBtn = document.getElementById("healBtn");
+const logoutBtn = document.getElementById("logoutBtn");
 const connectionStatusEl = document.getElementById("connectionStatus");
 const playersPanelEl = document.getElementById("playersPanel");
 const playersListEl = document.getElementById("playersList");
@@ -19,6 +20,7 @@ let isConnected = false;
 let myId = null;
 let state = null;
 let selectedTargetId = null;
+let attackedTargetId = null;
 let zoom = 1;
 const MIN_ZOOM = 0.2;
 const MAX_ZOOM = 2.2;
@@ -153,11 +155,24 @@ function sendMoveTo(x, y) {
 }
 
 attackBtn.addEventListener("click", () => {
+  if (!selectedTargetId) return;
   sendAction("attack", selectedTargetId);
+  attackedTargetId = selectedTargetId;
 });
 
 healBtn.addEventListener("click", () => {
   sendAction("heal");
+});
+
+logoutBtn.addEventListener("click", async () => {
+  try {
+    await fetch("/api/logout", {
+      method: "POST",
+      credentials: "include"
+    });
+  } finally {
+    location.href = "/auth";
+  }
 });
 
 function allTargetableEntities() {
@@ -251,6 +266,7 @@ function render() {
   const cameraX = me ? me.x - canvas.width / (2 * zoom) : 0;
   const cameraY = me ? me.y - canvas.height / (2 * zoom) : 0;
   const currentTarget = findById(selectedTargetId);
+  const attackedTarget = findById(attackedTargetId);
 
   drawGrid(cameraX, cameraY, state.world, zoom);
 
@@ -305,6 +321,22 @@ function render() {
     selectedTargetId = null;
   }
 
+  if (attackedTarget) {
+    ctx.strokeStyle = "#ff5a5a";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(
+      (attackedTarget.x - cameraX) * zoom,
+      (attackedTarget.y - cameraY) * zoom,
+      (attackedTarget.radius + 12) * zoom,
+      0,
+      Math.PI * 2
+    );
+    ctx.stroke();
+  } else if (attackedTargetId) {
+    attackedTargetId = null;
+  }
+
   if (me) {
     const healLeft = Math.max(0, me.healCooldown || 0);
     statsEl.textContent =
@@ -320,7 +352,7 @@ function render() {
   } else {
     targetEl.textContent = "Cel: brak";
   }
-  attackBtn.disabled = false;
+  attackBtn.disabled = !currentTarget;
   attackBtn.textContent = "Atak";
 
   if (playersPanelOpen) {
@@ -357,9 +389,11 @@ function onMapPointer(clientX, clientY) {
   }
   if (best) {
     selectedTargetId = best.id;
+    attackedTargetId = null;
     return;
   }
   selectedTargetId = null;
+  attackedTargetId = null;
   sendMoveTo(worldX, worldY);
 }
 

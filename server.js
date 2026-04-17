@@ -559,18 +559,17 @@ function updatePlayers(dt) {
     const input = player.input;
     const hasFreshInput = !!input && Date.now() - input.ts <= MAX_INPUT_AGE_MS;
     if (!hasFreshInput) {
-      player.vx *= 0.95;
-      player.vy *= 0.95;
+      player.vx *= 0.8;
+      player.vy *= 0.8;
     } else if (input.manualControl) {
       player.moveTarget = null;
       if (input.left) player.angle -= player.turnSpeed * dt;
       if (input.right) player.angle += player.turnSpeed * dt;
 
       const thrust = input.forward ? 1 : input.back ? -0.55 : 0;
-      const ax = Math.cos(player.angle) * player.speed * thrust;
-      const ay = Math.sin(player.angle) * player.speed * thrust;
-      player.vx = clamp(player.vx + ax * dt * 2.2, -player.speed, player.speed);
-      player.vy = clamp(player.vy + ay * dt * 2.2, -player.speed, player.speed);
+      const targetSpeed = player.speed * thrust;
+      player.vx = Math.cos(player.angle) * targetSpeed;
+      player.vy = Math.sin(player.angle) * targetSpeed;
     }
     if ((!hasFreshInput || !input.manualControl) && player.moveTarget) {
       const dx = player.moveTarget.x - player.x;
@@ -598,8 +597,8 @@ function updatePlayers(dt) {
 
     player.x = clamp(player.x + player.vx * dt, player.radius, WORLD_WIDTH - player.radius);
     player.y = clamp(player.y + player.vy * dt, player.radius, WORLD_HEIGHT - player.radius);
-    player.vx *= 0.985;
-    player.vy *= 0.985;
+    player.vx *= 0.9;
+    player.vy *= 0.9;
     if (player.cooldown > 0) player.cooldown -= dt;
     if (player.healCooldown > 0) player.healCooldown -= dt;
   }
@@ -609,22 +608,10 @@ function findEntityById(id) {
   return players.get(id) || mobs.get(id) || null;
 }
 
-function nearestAttackTarget(from) {
-  const nearestPlayer = nearestPlayerTo(from);
-  const nearestMob = nearestTarget(from, false);
-  if (!nearestPlayer) return nearestMob;
-  if (!nearestMob) return nearestPlayer;
-  const playerD2 = dist2(from.x, from.y, nearestPlayer.x, nearestPlayer.y);
-  const mobD2 = dist2(from.x, from.y, nearestMob.x, nearestMob.y);
-  return playerD2 <= mobD2 ? nearestPlayer : nearestMob;
-}
-
 function handlePlayerAction(player, msg) {
   if (msg.action === "attack") {
-    let target = findEntityById(msg.targetId);
-    if (!target || !target.alive || target.id === player.id) {
-      target = nearestAttackTarget(player);
-    }
+    if (!msg.targetId) return;
+    const target = findEntityById(msg.targetId);
     if (!target || !target.alive || target.id === player.id) return;
     const inRange = dist2(player.x, player.y, target.x, target.y) <= player.attackRange * player.attackRange;
     if (!inRange || player.cooldown > 0) return;
