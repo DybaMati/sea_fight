@@ -58,13 +58,42 @@ async function ensureSchema() {
         nick VARCHAR(32) NOT NULL UNIQUE,
         email VARCHAR(255) NOT NULL UNIQUE,
         password_hash VARCHAR(255) NOT NULL,
+        exp INT UNSIGNED NOT NULL DEFAULT 0,
+        level INT UNSIGNED NOT NULL DEFAULT 1,
         created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
         last_login_at TIMESTAMP NULL DEFAULT NULL
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
+
+    // Migracja dla starszych instancji tabeli bez kolumn exp/level.
+    try {
+      await conn.query("ALTER TABLE statki_1 ADD COLUMN exp INT UNSIGNED NOT NULL DEFAULT 0");
+    } catch (_) {
+      // Column probably already exists.
+    }
+    try {
+      await conn.query("ALTER TABLE statki_1 ADD COLUMN level INT UNSIGNED NOT NULL DEFAULT 1");
+    } catch (_) {
+      // Column probably already exists.
+    }
   } finally {
     conn.release();
   }
+}
+
+async function loadUserProgress(userId) {
+  const [rows] = await dbPool.execute("SELECT exp, level FROM statki_1 WHERE id = ? LIMIT 1", [userId]);
+  if (!rows.length) return { exp: 0, level: 1 };
+  const exp = Number(rows[0].exp || 0);
+  return {
+    exp,
+    level: levelFromExp(exp)
+  };
+}
+
+async function saveUserProgress(userId, exp, level) {
+  if (!userId) return;
+  await dbPool.execute("UPDATE statki_1 SET exp = ?, level = ? WHERE id = ?", [exp, level, userId]);
 }
 
 function loadMonsterTypes() {
@@ -101,6 +130,28 @@ function dist2(ax, ay, bx, by) {
   return dx * dx + dy * dy;
 }
 
+function expForLevel(level) {
+  // Calkowity EXP wymagany do osiagniecia danego poziomu.
+  if (level <= 1) return 0;
+  const n = level - 1;
+  return 20 * n * (n + 3);
+}
+
+function levelFromExp(exp) {
+  const safeExp = Math.max(0, Number(exp) || 0);
+  let level = 1;
+  while (safeExp >= expForLevel(level + 1)) {
+    level += 1;
+    if (level > 500) break;
+  }
+  return level;
+}
+
+function maxHpForLevel(level) {
+  // Bazowe HP 100 + 12 za kazdy kolejny poziom.
+  return 100 + Math.max(0, level - 1) * 12;
+}
+
 function uid(prefix) {
   const id = `${prefix}_${entityId}`;
   entityId += 1;
@@ -108,6 +159,7 @@ function uid(prefix) {
 }
 
 function createShip(id, kind) {
+  const baseMaxHp = maxHpForLevel(1);
   return {
     id,
     kind,
@@ -116,8 +168,8 @@ function createShip(id, kind) {
     vx: 0,
     vy: 0,
     angle: rand(0, Math.PI * 2),
-    hp: 100,
-    maxHp: 100,
+    hp: baseMaxHp,
+    maxHp: baseMaxHp,
     radius: 20,
     speed: kind === "player" ? 180 : 120,
     turnSpeed: 2.8,
@@ -431,6 +483,9 @@ function schedulePlayerRemoval(playerId) {
     if (hasLiveConnection(playerId)) return;
     const player = players.get(playerId);
     if (!player) return;
+    saveUserProgress(player.userId, player.exp, player.level).catch((error) => {
+      console.error("Nie udalo sie zapisac postepu gracza.", error);
+    });
     players.delete(playerId);
     if (player.userId) playerByUserId.delete(player.userId);
   }, PLAYER_DISCONNECT_GRACE_MS);
@@ -496,13 +551,22 @@ function damageTarget(target, amount, attackerId) {
 
   if (players.has(attackerId)) {
     const player = players.get(attackerId);
+    const prevLevel = player.level;
     player.score += 1;
     if (target.kind === "player") player.exp += 40;
     if (target.kind === "mob") player.exp += target.expReward || 12;
-    player.level = Math.floor(player.exp / 100) + 1;
+    player.level = levelFromExp(player.exp);
+    if (player.level !== prevLevel) {
+      const oldMaxHp = player.maxHp;
+      player.maxHp = maxHpForLevel(player.level);
+      // Zachowaj ten sam procent zycia po wejsciu na nowy poziom.
+      const hpRatio = oldMaxHp > 0 ? player.hp / oldMaxHp : 1;
+      player.hp = Math.max(1, Math.round(player.maxHp * hpRatio));
+    }
   }
 
   if (target.kind === "player") {
+    target.maxHp = maxHpForLevel(target.level || 1);
     target.hp = target.maxHp;
     target.x = rand(120, WORLD_WIDTH - 120);
     target.y = rand(120, WORLD_HEIGHT - 120);
@@ -703,7 +767,9 @@ function gameState() {
       name: p.name,
       exp: p.exp,
       level: p.level,
-      healCooldown: p.healCooldown
+      healCooldown: p.healCooldown,
+      levelStartExp: expForLevel(p.level),
+      nextLevelExp: expForLevel(p.level + 1)
     })),
     mobs: Array.from(mobs.values()).map((m) => ({
       id: m.id,
@@ -726,7 +792,7 @@ function gameState() {
   };
 }
 
-wss.on("connection", (ws, req) => {
+wss.on("connection", async (ws, req) => {
   const auth = getSessionFromReq(req);
   if (!auth) {
     ws.close(1008, "Unauthorized");
@@ -749,6 +815,15 @@ wss.on("connection", (ws, req) => {
   }
   player.name = user.nick;
   player.userId = user.id;
+  try {
+    const progress = await loadUserProgress(user.id);
+    player.exp = progress.exp;
+    player.level = progress.level;
+    player.maxHp = maxHpForLevel(player.level);
+    player.hp = Math.min(player.hp, player.maxHp);
+  } catch (error) {
+    console.error("Nie udalo sie wczytac postepu gracza.", error);
+  }
   clients.set(ws, player.id);
 
   ws.send(JSON.stringify({ type: "welcome", id: player.id, name: player.name }));
@@ -797,6 +872,14 @@ setInterval(() => {
 setInterval(() => {
   broadcast({ type: "state", state: gameState() });
 }, 1000 / 20);
+
+setInterval(() => {
+  for (const player of players.values()) {
+    saveUserProgress(player.userId, player.exp, player.level).catch((error) => {
+      console.error("Nie udalo sie okresowo zapisac postepu gracza.", error);
+    });
+  }
+}, 15000);
 
 async function start() {
   try {

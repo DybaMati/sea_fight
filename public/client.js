@@ -339,8 +339,12 @@ function render() {
 
   if (me) {
     const healLeft = Math.max(0, me.healCooldown || 0);
+    const levelStartExp = me.levelStartExp || 0;
+    const nextLevelExp = me.nextLevelExp || levelStartExp + 100;
+    const expInLevel = Math.max(0, me.exp - levelStartExp);
+    const expNeeded = Math.max(1, nextLevelExp - levelStartExp);
     statsEl.textContent =
-      `HP: ${Math.ceil(me.hp)} / ${me.maxHp} | EXP: ${me.exp} | LVL: ${me.level} | ` +
+      `HP: ${Math.ceil(me.hp)} / ${me.maxHp} | EXP: ${expInLevel}/${expNeeded} (SUMA ${me.exp}) | LVL: ${me.level} | ` +
       `Score: ${me.score} | Heal CD: ${healLeft.toFixed(1)}s | Zoom: ${zoom.toFixed(2)}x`;
     coordsEl.textContent = `Koordy: X ${Math.round(me.x)} | Y ${Math.round(me.y)} | Graczy: ${state.players.length}`;
     healBtn.disabled = healLeft > 0 || me.hp >= me.maxHp;
