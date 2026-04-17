@@ -17,15 +17,47 @@ body {
   z-index: 2;
   background: rgba(0, 0, 0, 0.35);
   border: 1px solid rgba(120, 210, 255, 0.35);
-  border-radius: 8px;
-  padding: 8px 10px;
-  line-height: 1.35;
+  border-radius: 6px;
+  padding: 6px 8px;
+  line-height: 1.2;
+  font-size: 13px;
 }
 
 .help {
   color: #9ac7e7;
-  font-size: 12px;
-  margin-top: 4px;
+  font-size: 11px;
+  margin-top: 3px;
+}
+
+.coords-hud {
+  position: fixed;
+  right: 10px;
+  top: 10px;
+  z-index: 2;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(120, 210, 255, 0.35);
+  border-radius: 6px;
+  padding: 4px 6px;
+  font-size: 10px;
+  color: #d9efff;
+}
+
+.connection-status {
+  position: fixed;
+  left: 50%;
+  top: 18px;
+  transform: translateX(-50%);
+  z-index: 5;
+  background: rgba(120, 20, 20, 0.9);
+  border: 1px solid rgba(255, 160, 160, 0.8);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 13px;
+  color: #ffe9e9;
+}
+
+.hidden {
+  display: none;
 }
 
 #game {

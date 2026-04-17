@@ -1,19 +1,21 @@
 const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
-const nameEl = document.getElementById("name");
 const statsEl = document.getElementById("stats");
 const coordsEl = document.getElementById("coords");
 const targetEl = document.getElementById("target");
 const attackBtn = document.getElementById("attackBtn");
 const healBtn = document.getElementById("healBtn");
+const connectionStatusEl = document.getElementById("connectionStatus");
 
-const socket = new WebSocket(`ws://${location.host}`);
+const RECONNECT_MS = 5000;
+let socket = null;
+let reconnectTimer = null;
+let isConnected = false;
 let myId = null;
-let myName = "Pirate";
 let state = null;
 let selectedTargetId = null;
 let zoom = 1;
-const MIN_ZOOM = 0.55;
+const MIN_ZOOM = 0.35;
 const MAX_ZOOM = 1.8;
 
 const keys = {
@@ -31,19 +33,57 @@ function resize() {
 window.addEventListener("resize", resize);
 resize();
 
-socket.addEventListener("message", (ev) => {
-  const msg = JSON.parse(ev.data);
-  if (msg.type === "welcome") {
-    myId = msg.id;
-    myName = msg.name;
-    nameEl.textContent = `Kapitan: ${myName}`;
-  } else if (msg.type === "state") {
-    state = msg.state;
+function setConnectionStatus(text, visible) {
+  connectionStatusEl.textContent = text;
+  connectionStatusEl.classList.toggle("hidden", !visible);
+}
+
+function clearReconnectTimer() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
   }
-});
+}
+
+function scheduleReconnect() {
+  clearReconnectTimer();
+  setConnectionStatus("Brak polaczenia z serwerem, ponowne laczenie za 5 sec", true);
+  reconnectTimer = setTimeout(connectSocket, RECONNECT_MS);
+}
+
+function connectSocket() {
+  clearReconnectTimer();
+  socket = new WebSocket(`ws://${location.host}`);
+
+  socket.addEventListener("open", () => {
+    isConnected = true;
+    setConnectionStatus("", false);
+  });
+
+  socket.addEventListener("message", (ev) => {
+    const msg = JSON.parse(ev.data);
+    if (msg.type === "welcome") {
+      myId = msg.id;
+    } else if (msg.type === "state") {
+      state = msg.state;
+    }
+  });
+
+  socket.addEventListener("close", () => {
+    isConnected = false;
+    state = null;
+    scheduleReconnect();
+  });
+
+  socket.addEventListener("error", () => {
+    isConnected = false;
+  });
+}
+
+connectSocket();
 
 function sendInput() {
-  if (socket.readyState !== WebSocket.OPEN) return;
+  if (!socket || socket.readyState !== WebSocket.OPEN) return;
   socket.send(JSON.stringify({ type: "input", ...keys }));
 }
 
@@ -83,12 +123,11 @@ window.addEventListener("keydown", (e) => {
 setInterval(sendInput, 1000 / 20);
 
 function sendAction(action, targetId = null) {
-  if (socket.readyState !== WebSocket.OPEN) return;
+  if (!socket || socket.readyState !== WebSocket.OPEN) return;
   socket.send(JSON.stringify({ type: "action", action, targetId }));
 }
 
 attackBtn.addEventListener("click", () => {
-  if (!selectedTargetId) return;
   sendAction("attack", selectedTargetId);
 });
 
@@ -174,7 +213,7 @@ function render() {
     ctx.fillStyle = "#dcefff";
     ctx.font = "20px Arial";
     ctx.textAlign = "center";
-    ctx.fillText("Laczenie z serwerem...", canvas.width / 2, canvas.height / 2);
+    ctx.fillText(isConnected ? "Ladowanie stanu gry..." : "Laczenie z serwerem...", canvas.width / 2, canvas.height / 2);
     return;
   }
 
@@ -240,11 +279,10 @@ function render() {
 
   if (currentTarget) {
     targetEl.textContent = `Cel: ${currentTarget.kind.toUpperCase()} (${Math.ceil(currentTarget.hp)} HP)`;
-    attackBtn.disabled = false;
   } else {
-    targetEl.textContent = "Cel: brak";
-    attackBtn.disabled = true;
+    targetEl.textContent = "Cel: brak (atak wybierze najblizszy cel w zasiegu)";
   }
+  attackBtn.disabled = false;
 }
 
 canvas.addEventListener("click", (event) => {

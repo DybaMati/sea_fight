@@ -73,11 +73,12 @@ function createMob() {
     hp: 60,
     maxHp: 60,
     radius: 17,
-    speed: 40,
+    speed: 2,
     turnSpeed: 1.3,
     cooldown: rand(0.2, 1.0),
     alive: true,
-    score: 0
+    score: 0,
+    combatReadyAt: Date.now() + rand(7000, 12000)
   };
 }
 
@@ -93,7 +94,9 @@ function createBullet(ownerId, ownerKind, x, y, angle, damage) {
     vy: Math.sin(angle) * speed,
     ttl: 2.5,
     radius: 4,
-    damage
+    damage,
+    maxTravel: Infinity,
+    traveled: 0
   };
 }
 
@@ -150,6 +153,7 @@ function nearestTarget(from, includePlayers = true) {
   for (const pool of pools) {
     for (const ent of pool) {
       if (!ent.alive || ent.id === from.id) continue;
+      if (from.kind === "mob" && ent.kind === "mob") continue;
       const d2 = dist2(from.x, from.y, ent.x, ent.y);
       if (d2 < bestD2) {
         bestD2 = d2;
@@ -162,10 +166,12 @@ function nearestTarget(from, includePlayers = true) {
 
 function fireIfReady(shooter, ownerKind, target, spread = 0.12, damage = 16) {
   if (!target || shooter.cooldown > 0) return;
+  const targetDistance = Math.sqrt(dist2(shooter.x, shooter.y, target.x, target.y));
   const angle = Math.atan2(target.y - shooter.y, target.x - shooter.x) + rand(-spread, spread);
   const muzzleX = shooter.x + Math.cos(angle) * (shooter.radius + 7);
   const muzzleY = shooter.y + Math.sin(angle) * (shooter.radius + 7);
   const bullet = createBullet(shooter.id, ownerKind, muzzleX, muzzleY, angle, damage);
+  bullet.maxTravel = Math.max(30, targetDistance + target.radius + 10);
   bullets.set(bullet.id, bullet);
   shooter.cooldown = 0.55;
 }
@@ -207,6 +213,7 @@ function damageTarget(target, amount, attackerId) {
 }
 
 function updateAI(unit, dt, targetPreferencePlayers = true) {
+  const now = Date.now();
   const target = nearestTarget(unit, targetPreferencePlayers);
   if (!target) return;
 
@@ -216,12 +223,20 @@ function updateAI(unit, dt, targetPreferencePlayers = true) {
   while (diff < -Math.PI) diff += Math.PI * 2;
   unit.angle += clamp(diff, -unit.turnSpeed * dt, unit.turnSpeed * dt);
 
-  unit.vx = Math.cos(unit.angle) * unit.speed;
-  unit.vy = Math.sin(unit.angle) * unit.speed;
+  if (unit.kind === "mob") {
+    // Moby prawie stoja w miejscu i tylko minimalnie dryfuja.
+    const drift = dist2(unit.x, unit.y, target.x, target.y) > 300 * 300 ? unit.speed : unit.speed * 0.25;
+    unit.vx = Math.cos(unit.angle) * drift;
+    unit.vy = Math.sin(unit.angle) * drift;
+  } else {
+    unit.vx = Math.cos(unit.angle) * unit.speed;
+    unit.vy = Math.sin(unit.angle) * unit.speed;
+  }
   unit.x = clamp(unit.x + unit.vx * dt, unit.radius, WORLD_WIDTH - unit.radius);
   unit.y = clamp(unit.y + unit.vy * dt, unit.radius, WORLD_HEIGHT - unit.radius);
 
   if (unit.cooldown > 0) unit.cooldown -= dt;
+  if (unit.kind === "mob" && now < (unit.combatReadyAt || 0)) return;
   const inRange = dist2(unit.x, unit.y, target.x, target.y) < 420 * 420;
   if (inRange) fireIfReady(unit, unit.kind, target, unit.kind === "mob" ? 0.18 : 0.12, unit.kind === "mob" ? 12 : 15);
 }
@@ -259,9 +274,12 @@ function findEntityById(id) {
 
 function handlePlayerAction(player, msg) {
   if (msg.action === "attack") {
-    const target = findEntityById(msg.targetId);
+    let target = findEntityById(msg.targetId);
+    if (!target || !target.alive || target.id === player.id) {
+      target = nearestTarget(player, true);
+    }
     if (!target || !target.alive || target.id === player.id) return;
-    const inRange = dist2(player.x, player.y, target.x, target.y) <= 500 * 500;
+    const inRange = dist2(player.x, player.y, target.x, target.y) <= 260 * 260;
     if (!inRange || player.cooldown > 0) return;
     fireIfReady(player, "player", target, 0.03, 20);
     return;
@@ -276,12 +294,16 @@ function handlePlayerAction(player, msg) {
 
 function updateBullets(dt) {
   for (const bullet of bullets.values()) {
-    bullet.x += bullet.vx * dt;
-    bullet.y += bullet.vy * dt;
+    const stepX = bullet.vx * dt;
+    const stepY = bullet.vy * dt;
+    bullet.x += stepX;
+    bullet.y += stepY;
+    bullet.traveled += Math.sqrt(stepX * stepX + stepY * stepY);
     bullet.ttl -= dt;
 
     if (
       bullet.ttl <= 0 ||
+      bullet.traveled >= bullet.maxTravel ||
       bullet.x < -30 ||
       bullet.y < -30 ||
       bullet.x > WORLD_WIDTH + 30 ||
