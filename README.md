@@ -48,3 +48,18 @@ Mozesz odpalic wiele kart/przegladarek, aby testowac multi.
 - frakcje i questy,
 - podzial na strefy PvE/PvP,
 - autorytatywna walidacja trafien pod anti-cheat.
+
+## Konfiguracja mobow
+
+Definicje mobow masz w folderze `monsters/`.
+Kazdy potwor to osobny plik, np.:
+
+- `monsters/syrena.js`
+- `monsters/wegorz.js`
+
+W pliku potwora ustawiasz m.in.:
+
+- `id`, `name`, `color`
+- `hp`, `damage`, `expReward`
+- `speed`, `turnSpeed`, `radius`
+- `attackRange`, `attackSpread`, `attackCooldown`

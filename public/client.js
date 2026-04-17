@@ -6,6 +6,7 @@ const targetEl = document.getElementById("target");
 const attackBtn = document.getElementById("attackBtn");
 const healBtn = document.getElementById("healBtn");
 const connectionStatusEl = document.getElementById("connectionStatus");
+const HEAL_BUTTON_LABEL = "Uleczenie";
 
 const RECONNECT_MS = 5000;
 let socket = null;
@@ -149,7 +150,7 @@ function findById(id) {
   return allTargetableEntities().find((e) => e.id === id) || null;
 }
 
-function drawShip(x, y, angle, radius, color, hp, maxHp, name) {
+function drawShip(x, y, angle, radius, color, hp, maxHp, name, subtitle = "") {
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(angle);
@@ -174,6 +175,12 @@ function drawShip(x, y, angle, radius, color, hp, maxHp, name) {
     ctx.font = "12px Arial";
     ctx.textAlign = "center";
     ctx.fillText(name, x, y - radius - 22);
+  }
+  if (subtitle) {
+    ctx.fillStyle = "#b7d7ec";
+    ctx.font = "10px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText(subtitle, x, y - radius - 32);
   }
 }
 
@@ -232,7 +239,17 @@ function render() {
   }
 
   for (const m of state.mobs) {
-    drawShip((m.x - cameraX) * zoom, (m.y - cameraY) * zoom, m.angle, m.radius * zoom, "#c66e51", m.hp, m.maxHp);
+    drawShip(
+      (m.x - cameraX) * zoom,
+      (m.y - cameraY) * zoom,
+      m.angle,
+      m.radius * zoom,
+      m.color || "#c66e51",
+      m.hp,
+      m.maxHp,
+      m.name || "Potwor",
+      `+${m.expReward || 12} EXP`
+    );
   }
 
   for (const n of state.npcs) {
@@ -248,7 +265,8 @@ function render() {
       p.id === myId ? "#5fe0a3" : "#79b7ff",
       p.hp,
       p.maxHp,
-      p.name
+      p.name,
+      `EXP ${p.exp}`
     );
   }
 
@@ -275,6 +293,7 @@ function render() {
       `Score: ${me.score} | Heal CD: ${healLeft.toFixed(1)}s | Zoom: ${zoom.toFixed(2)}x`;
     coordsEl.textContent = `Koordy: X ${Math.round(me.x)} | Y ${Math.round(me.y)} | Graczy: ${state.players.length}`;
     healBtn.disabled = healLeft > 0 || me.hp >= me.maxHp;
+    healBtn.textContent = healLeft > 0 ? `${HEAL_BUTTON_LABEL} (${healLeft.toFixed(1)}s)` : HEAL_BUTTON_LABEL;
   }
 
   if (currentTarget) {

@@ -18,6 +18,26 @@ const mobs = new Map();
 let bulletId = 1;
 let entityId = 1;
 
+function loadMonsterTypes() {
+  const monstersDir = path.join(__dirname, "monsters");
+  if (!fs.existsSync(monstersDir)) return [];
+
+  const files = fs
+    .readdirSync(monstersDir)
+    .filter((file) => file.endsWith(".js"));
+
+  const loaded = [];
+  for (const file of files) {
+    const fullPath = path.join(monstersDir, file);
+    const monster = require(fullPath);
+    if (!monster || !monster.id || !monster.name) continue;
+    loaded.push(monster);
+  }
+  return loaded;
+}
+
+const MOB_TYPES = loadMonsterTypes();
+
 function rand(min, max) {
   return Math.random() * (max - min) + min;
 }
@@ -62,6 +82,10 @@ function createShip(id, kind) {
 }
 
 function createMob() {
+  if (MOB_TYPES.length === 0) {
+    throw new Error("Brak definicji potworow w folderze monsters/");
+  }
+  const type = MOB_TYPES[Math.floor(rand(0, MOB_TYPES.length))];
   return {
     id: uid("mob"),
     kind: "mob",
@@ -70,15 +94,24 @@ function createMob() {
     vx: 0,
     vy: 0,
     angle: rand(0, Math.PI * 2),
-    hp: 60,
-    maxHp: 60,
-    radius: 17,
-    speed: 2,
-    turnSpeed: 1.3,
+    hp: type.hp,
+    maxHp: type.hp,
+    radius: type.radius,
+    speed: type.speed,
+    turnSpeed: type.turnSpeed,
     cooldown: rand(0.2, 1.0),
     alive: true,
     score: 0,
-    combatReadyAt: Date.now() + rand(7000, 12000)
+    combatReadyAt: Date.now() + rand(7000, 12000),
+    name: type.name,
+    color: type.color,
+    mobTypeId: type.id,
+    expReward: type.expReward,
+    damage: type.damage,
+    attackRange: type.attackRange,
+    attackSpread: type.attackSpread,
+    attackCooldown: type.attackCooldown,
+    aggroTargetId: null
   };
 }
 
@@ -164,6 +197,20 @@ function nearestTarget(from, includePlayers = true) {
   return best;
 }
 
+function nearestPlayerTo(from) {
+  let best = null;
+  let bestD2 = Infinity;
+  for (const p of players.values()) {
+    if (!p.alive || p.id === from.id) continue;
+    const d2 = dist2(from.x, from.y, p.x, p.y);
+    if (d2 < bestD2) {
+      bestD2 = d2;
+      best = p;
+    }
+  }
+  return best;
+}
+
 function fireIfReady(shooter, ownerKind, target, spread = 0.12, damage = 16) {
   if (!target || shooter.cooldown > 0) return;
   const targetDistance = Math.sqrt(dist2(shooter.x, shooter.y, target.x, target.y));
@@ -173,7 +220,7 @@ function fireIfReady(shooter, ownerKind, target, spread = 0.12, damage = 16) {
   const bullet = createBullet(shooter.id, ownerKind, muzzleX, muzzleY, angle, damage);
   bullet.maxTravel = Math.max(30, targetDistance + target.radius + 10);
   bullets.set(bullet.id, bullet);
-  shooter.cooldown = 0.55;
+  shooter.cooldown = shooter.attackCooldown || 0.55;
 }
 
 function damageTarget(target, amount, attackerId) {
@@ -186,8 +233,11 @@ function damageTarget(target, amount, attackerId) {
     player.score += 1;
     if (target.kind === "player") player.exp += 40;
     if (target.kind === "npc") player.exp += 25;
-    if (target.kind === "mob") player.exp += 12;
+    if (target.kind === "mob") player.exp += target.expReward || 12;
     player.level = Math.floor(player.exp / 100) + 1;
+    if (target.kind === "mob") {
+      target.aggroTargetId = attackerId;
+    }
   }
 
   if (target.kind === "player") {
@@ -214,7 +264,16 @@ function damageTarget(target, amount, attackerId) {
 
 function updateAI(unit, dt, targetPreferencePlayers = true) {
   const now = Date.now();
-  const target = nearestTarget(unit, targetPreferencePlayers);
+  let target = null;
+  if (unit.kind === "mob") {
+    target = unit.aggroTargetId ? players.get(unit.aggroTargetId) || null : null;
+    if (!target || !target.alive) {
+      unit.aggroTargetId = null;
+      target = null;
+    }
+  } else {
+    target = nearestTarget(unit, targetPreferencePlayers);
+  }
   if (!target) return;
 
   const desired = Math.atan2(target.y - unit.y, target.x - unit.x);
@@ -224,10 +283,9 @@ function updateAI(unit, dt, targetPreferencePlayers = true) {
   unit.angle += clamp(diff, -unit.turnSpeed * dt, unit.turnSpeed * dt);
 
   if (unit.kind === "mob") {
-    // Moby prawie stoja w miejscu i tylko minimalnie dryfuja.
-    const drift = dist2(unit.x, unit.y, target.x, target.y) > 300 * 300 ? unit.speed : unit.speed * 0.25;
-    unit.vx = Math.cos(unit.angle) * drift;
-    unit.vy = Math.sin(unit.angle) * drift;
+    // Moby sa pasywne i po wejsciu w walke stoja w miejscu.
+    unit.vx = 0;
+    unit.vy = 0;
   } else {
     unit.vx = Math.cos(unit.angle) * unit.speed;
     unit.vy = Math.sin(unit.angle) * unit.speed;
@@ -237,8 +295,10 @@ function updateAI(unit, dt, targetPreferencePlayers = true) {
 
   if (unit.cooldown > 0) unit.cooldown -= dt;
   if (unit.kind === "mob" && now < (unit.combatReadyAt || 0)) return;
-  const inRange = dist2(unit.x, unit.y, target.x, target.y) < 420 * 420;
-  if (inRange) fireIfReady(unit, unit.kind, target, unit.kind === "mob" ? 0.18 : 0.12, unit.kind === "mob" ? 12 : 15);
+  const range = unit.attackRange || 420;
+  const spread = unit.kind === "mob" ? (unit.attackSpread || 0.18) : 0.12;
+  const inRange = dist2(unit.x, unit.y, target.x, target.y) < range * range;
+  if (inRange) fireIfReady(unit, unit.kind, target, spread, unit.kind === "mob" ? unit.damage : 15);
 }
 
 function updatePlayers(dt) {
@@ -276,10 +336,10 @@ function handlePlayerAction(player, msg) {
   if (msg.action === "attack") {
     let target = findEntityById(msg.targetId);
     if (!target || !target.alive || target.id === player.id) {
-      target = nearestTarget(player, true);
+      target = nearestPlayerTo(player) || nearestTarget(player, false);
     }
     if (!target || !target.alive || target.id === player.id) return;
-    const inRange = dist2(player.x, player.y, target.x, target.y) <= 260 * 260;
+    const inRange = dist2(player.x, player.y, target.x, target.y) <= 420 * 420;
     if (!inRange || player.cooldown > 0) return;
     fireIfReady(player, "player", target, 0.03, 20);
     return;
@@ -288,7 +348,7 @@ function handlePlayerAction(player, msg) {
   if (msg.action === "heal") {
     if (player.healCooldown > 0 || player.hp >= player.maxHp) return;
     player.hp = Math.min(player.maxHp, player.hp + 35);
-    player.healCooldown = 10;
+    player.healCooldown = 3;
   }
 }
 
@@ -365,7 +425,10 @@ function gameState() {
       angle: m.angle,
       hp: m.hp,
       maxHp: m.maxHp,
-      radius: m.radius
+      radius: m.radius,
+      name: m.name,
+      color: m.color,
+      expReward: m.expReward
     })),
     bullets: Array.from(bullets.values()).map((b) => ({
       id: b.id,
