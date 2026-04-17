@@ -1,0 +1,35 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #06111d;
+  color: #d9efff;
+  font-family: Arial, sans-serif;
+  overflow: hidden;
+}
+
+.hud {
+  position: fixed;
+  left: 10px;
+  top: 10px;
+  z-index: 2;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(120, 210, 255, 0.35);
+  border-radius: 8px;
+  padding: 8px 10px;
+  line-height: 1.35;
+}
+
+.help {
+  color: #9ac7e7;
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+#game {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+}

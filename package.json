@@ -1,0 +1,13 @@
+{
+  "name": "sea-fight",
+  "version": "0.1.0",
+  "description": "Realtime naval game with WebSocket",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
