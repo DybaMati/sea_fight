@@ -89,3 +89,15 @@ W pliku potwora ustawiasz m.in.:
 - `speed`, `turnSpeed`, `radius`
 - `attackRange`, `attackSpread`, `attackCooldown`
 
+## Konfiguracja czarow/atakow
+
+Definicje atakow gracza sa w folderze `spells/` (jeden atak = jeden plik), np.:
+
+- `spells/basic-shot.js`
+- `spells/momby.js`
+
+W pliku ataku ustawiasz m.in.:
+
+- `cooldown`, `range`, `mainDamage`
+- parametry pocisku glownego (`mainSpeed`, `mainRadius`, `mainTtl`)
+- parametry salwy (`pelletCount`, `pelletDamage`, `pelletArcStart`, `pelletArcEnd`)

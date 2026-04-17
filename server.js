@@ -34,6 +34,7 @@ const disconnectTimers = new Map();
 let bulletId = 1;
 let entityId = 1;
 const PLAYER_DISCONNECT_GRACE_MS = 5000;
+let SPELLS = new Map();
 
 async function ensureSchema() {
   const bootstrap = await mysql.createConnection({
@@ -60,6 +61,7 @@ async function ensureSchema() {
         password_hash VARCHAR(255) NOT NULL,
         exp INT UNSIGNED NOT NULL DEFAULT 0,
         level INT UNSIGNED NOT NULL DEFAULT 1,
+        hp INT UNSIGNED NOT NULL DEFAULT 100,
         created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
         last_login_at TIMESTAMP NULL DEFAULT NULL
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -76,24 +78,33 @@ async function ensureSchema() {
     } catch (_) {
       // Column probably already exists.
     }
+    try {
+      await conn.query("ALTER TABLE statki_1 ADD COLUMN hp INT UNSIGNED NOT NULL DEFAULT 100");
+    } catch (_) {
+      // Column probably already exists.
+    }
   } finally {
     conn.release();
   }
 }
 
 async function loadUserProgress(userId) {
-  const [rows] = await dbPool.execute("SELECT exp, level FROM statki_1 WHERE id = ? LIMIT 1", [userId]);
-  if (!rows.length) return { exp: 0, level: 1 };
+  const [rows] = await dbPool.execute("SELECT exp, level, hp FROM statki_1 WHERE id = ? LIMIT 1", [userId]);
+  if (!rows.length) return { exp: 0, level: 1, hp: maxHpForLevel(1) };
   const exp = Number(rows[0].exp || 0);
+  const level = levelFromExp(exp);
+  const maxHp = maxHpForLevel(level);
+  const hp = clamp(Number(rows[0].hp || maxHp), 1, maxHp);
   return {
     exp,
-    level: levelFromExp(exp)
+    level,
+    hp
   };
 }
 
-async function saveUserProgress(userId, exp, level) {
+async function saveUserProgress(userId, exp, level, hp) {
   if (!userId) return;
-  await dbPool.execute("UPDATE statki_1 SET exp = ?, level = ? WHERE id = ?", [exp, level, userId]);
+  await dbPool.execute("UPDATE statki_1 SET exp = ?, level = ?, hp = ? WHERE id = ?", [exp, level, Math.max(1, Math.floor(hp || 1)), userId]);
 }
 
 function loadMonsterTypes() {
@@ -115,6 +126,24 @@ function loadMonsterTypes() {
 }
 
 const MOB_TYPES = loadMonsterTypes();
+
+function loadSpells() {
+  const spellsDir = path.join(__dirname, "spells");
+  if (!fs.existsSync(spellsDir)) return new Map();
+
+  const files = fs
+    .readdirSync(spellsDir)
+    .filter((file) => file.endsWith(".js"));
+
+  const loaded = new Map();
+  for (const file of files) {
+    const fullPath = path.join(spellsDir, file);
+    const spell = require(fullPath);
+    if (!spell || !spell.id || !spell.name) continue;
+    loaded.set(spell.id, spell);
+  }
+  return loaded;
+}
 
 function rand(min, max) {
   return Math.random() * (max - min) + min;
@@ -179,8 +208,7 @@ function createShip(id, kind) {
     exp: 0,
     level: 1,
     healCooldown: 0,
-    attackCooldown: 1.0,
-    attackRange: 420,
+    spellCooldowns: {},
     moveTarget: null
   };
 }
@@ -219,8 +247,8 @@ function createMob() {
   };
 }
 
-function createBullet(ownerId, ownerKind, x, y, angle, damage) {
-  const speed = 420;
+function createBullet(ownerId, ownerKind, x, y, angle, damage, options = {}) {
+  const speed = options.speed || 420;
   return {
     id: `b_${bulletId++}`,
     ownerId,
@@ -229,10 +257,10 @@ function createBullet(ownerId, ownerKind, x, y, angle, damage) {
     y,
     vx: Math.cos(angle) * speed,
     vy: Math.sin(angle) * speed,
-    ttl: 2.5,
-    radius: 4,
+    ttl: options.ttl || 2.5,
+    radius: options.radius || 4,
     damage,
-    maxTravel: Infinity,
+    maxTravel: options.maxTravel || Infinity,
     traveled: 0
   };
 }
@@ -483,7 +511,7 @@ function schedulePlayerRemoval(playerId) {
     if (hasLiveConnection(playerId)) return;
     const player = players.get(playerId);
     if (!player) return;
-    saveUserProgress(player.userId, player.exp, player.level).catch((error) => {
+    saveUserProgress(player.userId, player.exp, player.level, player.hp).catch((error) => {
       console.error("Nie udalo sie zapisac postepu gracza.", error);
     });
     players.delete(playerId);
@@ -527,16 +555,70 @@ function nearestPlayerTo(from) {
   return best;
 }
 
-function fireIfReady(shooter, ownerKind, target, spread = 0.12, damage = 16) {
-  if (!target || shooter.cooldown > 0) return;
+function fireIfReady(shooter, ownerKind, target, spread = 0.12, damage = 16, options = {}) {
+  if (!target || shooter.cooldown > 0) return false;
   const targetDistance = Math.sqrt(dist2(shooter.x, shooter.y, target.x, target.y));
   const angle = Math.atan2(target.y - shooter.y, target.x - shooter.x) + rand(-spread, spread);
   const muzzleX = shooter.x + Math.cos(angle) * (shooter.radius + 7);
   const muzzleY = shooter.y + Math.sin(angle) * (shooter.radius + 7);
-  const bullet = createBullet(shooter.id, ownerKind, muzzleX, muzzleY, angle, damage);
+  const bullet = createBullet(shooter.id, ownerKind, muzzleX, muzzleY, angle, damage, options);
   bullet.maxTravel = Math.max(30, targetDistance + target.radius + 10);
   bullets.set(bullet.id, bullet);
-  shooter.cooldown = shooter.attackCooldown || 0.55;
+  shooter.cooldown = options.cooldown || shooter.attackCooldown || 0.55;
+  return true;
+}
+
+function castPlayerSpell(shooter, target, spellId) {
+  const spell = SPELLS.get(spellId);
+  if (!spell || !target || !target.alive || target.id === shooter.id) return false;
+
+  const spellCdLeft = shooter.spellCooldowns[spell.id] || 0;
+  if (spellCdLeft > 0 || shooter.cooldown > 0) return false;
+
+  const inRange = dist2(shooter.x, shooter.y, target.x, target.y) <= (spell.range || 420) * (spell.range || 420);
+  if (!inRange) return false;
+
+  const firedMain = fireIfReady(
+    shooter,
+    "player",
+    target,
+    spell.spread || 0.03,
+    spell.mainDamage || 16,
+    {
+      speed: spell.mainSpeed || 420,
+      radius: spell.mainRadius || 4,
+      ttl: spell.mainTtl || 2.5,
+      cooldown: spell.cooldown || 1
+    }
+  );
+  if (!firedMain) return false;
+
+  const pelletCount = spell.pelletCount || 0;
+  if (pelletCount > 0) {
+    const targetDistance = Math.sqrt(dist2(shooter.x, shooter.y, target.x, target.y));
+    const baseAngle = Math.atan2(target.y - shooter.y, target.x - shooter.x);
+    const arcStart = spell.pelletArcStart || -0.2;
+    const arcEnd = spell.pelletArcEnd || 0.4;
+    const jitter = spell.pelletJitter || 0;
+
+    for (let i = 0; i < pelletCount; i += 1) {
+      const t = pelletCount === 1 ? 0 : i / (pelletCount - 1);
+      const arc = arcStart + t * (arcEnd - arcStart);
+      const angle = baseAngle + arc + rand(-jitter, jitter);
+      const muzzleX = shooter.x + Math.cos(angle) * (shooter.radius + 4);
+      const muzzleY = shooter.y + Math.sin(angle) * (shooter.radius + 4);
+      const pellet = createBullet(shooter.id, "player", muzzleX, muzzleY, angle, spell.pelletDamage || 4, {
+        speed: spell.pelletSpeed || 360,
+        radius: spell.pelletRadius || 2,
+        ttl: spell.pelletTtl || 1,
+        maxTravel: Math.max(35, targetDistance + 15)
+      });
+      bullets.set(pellet.id, pellet);
+    }
+  }
+
+  shooter.spellCooldowns[spell.id] = spell.cooldown || 1;
+  return true;
 }
 
 function damageTarget(target, amount, attackerId) {
@@ -679,6 +761,9 @@ function updatePlayers(dt) {
     player.vy *= 0.9;
     if (player.cooldown > 0) player.cooldown -= dt;
     if (player.healCooldown > 0) player.healCooldown -= dt;
+    for (const spellId of Object.keys(player.spellCooldowns)) {
+      player.spellCooldowns[spellId] = Math.max(0, player.spellCooldowns[spellId] - dt);
+    }
   }
 }
 
@@ -690,10 +775,7 @@ function handlePlayerAction(player, msg) {
   if (msg.action === "attack") {
     if (!msg.targetId) return;
     const target = findEntityById(msg.targetId);
-    if (!target || !target.alive || target.id === player.id) return;
-    const inRange = dist2(player.x, player.y, target.x, target.y) <= player.attackRange * player.attackRange;
-    if (!inRange || player.cooldown > 0) return;
-    fireIfReady(player, "player", target, 0.03, 20);
+    castPlayerSpell(player, target, "basic-shot");
     return;
   }
 
@@ -712,6 +794,13 @@ function handlePlayerAction(player, msg) {
     if (player.healCooldown > 0 || player.hp >= player.maxHp) return;
     player.hp = Math.min(player.maxHp, player.hp + 35);
     player.healCooldown = 3;
+    return;
+  }
+
+  if (msg.action === "momby") {
+    if (!msg.targetId) return;
+    const target = findEntityById(msg.targetId);
+    castPlayerSpell(player, target, "momby");
   }
 }
 
@@ -768,6 +857,7 @@ function gameState() {
       exp: p.exp,
       level: p.level,
       healCooldown: p.healCooldown,
+      spellCooldowns: p.spellCooldowns,
       levelStartExp: expForLevel(p.level),
       nextLevelExp: expForLevel(p.level + 1)
     })),
@@ -820,7 +910,7 @@ wss.on("connection", async (ws, req) => {
     player.exp = progress.exp;
     player.level = progress.level;
     player.maxHp = maxHpForLevel(player.level);
-    player.hp = Math.min(player.hp, player.maxHp);
+    player.hp = progress.hp;
   } catch (error) {
     console.error("Nie udalo sie wczytac postepu gracza.", error);
   }
@@ -875,7 +965,7 @@ setInterval(() => {
 
 setInterval(() => {
   for (const player of players.values()) {
-    saveUserProgress(player.userId, player.exp, player.level).catch((error) => {
+    saveUserProgress(player.userId, player.exp, player.level, player.hp).catch((error) => {
       console.error("Nie udalo sie okresowo zapisac postepu gracza.", error);
     });
   }
@@ -883,6 +973,13 @@ setInterval(() => {
 
 async function start() {
   try {
+    SPELLS = loadSpells();
+    if (!SPELLS.has("basic-shot")) {
+      throw new Error("Brak czaru basic-shot w folderze spells/");
+    }
+    if (!SPELLS.has("momby")) {
+      throw new Error("Brak czaru momby w folderze spells/");
+    }
     await ensureSchema();
     server.listen(PORT, () => {
       console.log(`Sea Fight server on http://localhost:${PORT}`);

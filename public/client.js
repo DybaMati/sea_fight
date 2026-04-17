@@ -3,6 +3,7 @@ const ctx = canvas.getContext("2d");
 const statsEl = document.getElementById("stats");
 const coordsEl = document.getElementById("coords");
 const targetEl = document.getElementById("target");
+const mombyBtn = document.getElementById("mombyBtn");
 const attackBtn = document.getElementById("attackBtn");
 const healBtn = document.getElementById("healBtn");
 const logoutBtn = document.getElementById("logoutBtn");
@@ -11,6 +12,7 @@ const playersPanelEl = document.getElementById("playersPanel");
 const playersListEl = document.getElementById("playersList");
 const closePlayersBtn = document.getElementById("closePlayersBtn");
 const HEAL_BUTTON_LABEL = "Uleczenie";
+const MOMBY_BUTTON_LABEL = "Momby";
 
 const RECONNECT_DELAY_SECONDS = 5;
 let socket = null;
@@ -131,6 +133,10 @@ window.addEventListener("wheel", (e) => {
 }, { passive: false });
 
 window.addEventListener("keydown", (e) => {
+  if (e.code === "Space") {
+    e.preventDefault();
+    doAttack();
+  }
   if (e.code === "Equal" || e.code === "NumpadAdd") {
     zoom = Math.min(MAX_ZOOM, zoom + 0.08);
   }
@@ -154,9 +160,19 @@ function sendMoveTo(x, y) {
   socket.send(JSON.stringify({ type: "action", action: "moveTo", x, y }));
 }
 
-attackBtn.addEventListener("click", () => {
+function doAttack() {
   if (!selectedTargetId) return;
   sendAction("attack", selectedTargetId);
+  attackedTargetId = selectedTargetId;
+}
+
+attackBtn.addEventListener("click", () => {
+  doAttack();
+});
+
+mombyBtn.addEventListener("click", () => {
+  if (!selectedTargetId) return;
+  sendAction("momby", selectedTargetId);
   attackedTargetId = selectedTargetId;
 });
 
@@ -339,6 +355,7 @@ function render() {
 
   if (me) {
     const healLeft = Math.max(0, me.healCooldown || 0);
+    const mombyLeft = Math.max(0, (me.spellCooldowns && me.spellCooldowns.momby) || 0);
     const levelStartExp = me.levelStartExp || 0;
     const nextLevelExp = me.nextLevelExp || levelStartExp + 100;
     const expInLevel = Math.max(0, me.exp - levelStartExp);
@@ -349,6 +366,8 @@ function render() {
     coordsEl.textContent = `Koordy: X ${Math.round(me.x)} | Y ${Math.round(me.y)} | Graczy: ${state.players.length}`;
     healBtn.disabled = healLeft > 0 || me.hp >= me.maxHp;
     healBtn.textContent = healLeft > 0 ? `${HEAL_BUTTON_LABEL} (${healLeft.toFixed(1)}s)` : HEAL_BUTTON_LABEL;
+    mombyBtn.disabled = !currentTarget || mombyLeft > 0;
+    mombyBtn.textContent = mombyLeft > 0 ? `${MOMBY_BUTTON_LABEL}\n${mombyLeft.toFixed(1)}s` : MOMBY_BUTTON_LABEL;
   }
 
   if (currentTarget) {
@@ -396,8 +415,7 @@ function onMapPointer(clientX, clientY) {
     attackedTargetId = null;
     return;
   }
-  selectedTargetId = null;
-  attackedTargetId = null;
+  // Klik w mape nie odznacza obecnego celu.
   sendMoveTo(worldX, worldY);
 }
 
